@@ -1,0 +1,130 @@
+name: Update NASA JPL Space Data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  update-space-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository'yi indir
+        uses: actions/checkout@v4
+
+      - name: Python'u hazırla
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: NASA JPL verisini al
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone, timedelta
+
+          planets = {
+              "Mercury": "199",
+              "Venus": "299",
+              "Earth": "399",
+              "Mars": "499",
+              "Jupiter": "599",
+              "Saturn": "699",
+              "Uranus": "799",
+              "Neptune": "899"
+          }
+
+          def get_position(target):
+              now = datetime.now(timezone.utc)
+
+              start = now.strftime("%Y-%m-%d %H:%M")
+              stop = (now + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M")
+
+              params = {
+                  "format": "text",
+                  "COMMAND": f"'{target}'",
+                  "EPHEM_TYPE": "VECTORS",
+                  "CENTER": "'500@10'",
+                  "START_TIME": f"'{start}'",
+                  "STOP_TIME": f"'{stop}'",
+                  "STEP_SIZE": "'5 m'",
+                  "OUT_UNITS": "'AU-D'",
+                  "REF_PLANE": "'ECLIPTIC'",
+                  "REF_SYSTEM": "'J2000'",
+                  "VEC_TABLE": "'1'",
+                  "CSV_FORMAT": "'YES'",
+                  "VEC_LABELS": "'NO'"
+              }
+
+              url = (
+                  "https://ssd.jpl.nasa.gov/api/horizons.api?"
+                  + urllib.parse.urlencode(params)
+              )
+
+              with urllib.request.urlopen(url, timeout=30) as response:
+                  text = response.read().decode("utf-8")
+
+              if "$$SOE" not in text or "$$EOE" not in text:
+                  raise RuntimeError(
+                      f"JPL Horizons geçerli veri döndürmedi: {target}\n{text[:1000]}"
+                  )
+
+              data = text.split("$$SOE", 1)[1].split("$$EOE", 1)[0].strip()
+              lines = [line.strip() for line in data.splitlines() if line.strip()]
+
+              if not lines:
+                  raise RuntimeError(f"JPL Horizons boş veri döndürdü: {target}")
+
+              values = [x.strip() for x in lines[0].split(",")]
+
+              if len(values) < 4:
+                  raise RuntimeError(
+                      f"JPL Horizons beklenmeyen veri döndürdü: {target}\n{lines[0]}"
+                  )
+
+              return {
+                  "x": float(values[1]),
+                  "y": float(values[2]),
+                  "z": float(values[3])
+              }
+
+          output = {
+              "status": "online",
+              "source": "NASA/JPL Horizons",
+              "updatedAt": datetime.now(timezone.utc).isoformat(),
+              "planets": {}
+          }
+
+          for name, target in planets.items():
+              print(f"NASA/JPL verisi alınıyor: {name}")
+              output["planets"][name] = get_position(target)
+
+          with open("data/space-data.json", "w", encoding="utf-8") as file:
+              json.dump(output, file, indent=2, ensure_ascii=False)
+
+          print("NASA/JPL verileri başarıyla yazıldı.")
+          PY
+
+      - name: Değişiklik var mı kontrol et
+        id: changes
+        run: |
+          if git diff --quiet -- data/space-data.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Veriyi GitHub'a kaydet
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/space-data.json
+          git commit -m "Update NASA JPL space data"
+          git push
